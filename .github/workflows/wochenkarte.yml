@@ -1,0 +1,54 @@
+name: Wochenkarte aktualisieren
+
+on:
+  schedule:
+    # Zeiten in UTC: Samstag und Sonntag ganztägig alle 30 Minuten, Montag bis ca. 11 Uhr
+    - cron: "7,37 * * * 6,0"
+    - cron: "7,37 0-9 * * 1"
+  workflow_dispatch:
+    inputs:
+      trocken:
+        description: "Trockenlauf: nichts hochladen, Ergebnis nur per Mail an das Gmail-Konto"
+        type: boolean
+        default: false
+      absender:
+        description: "Absender der Wochenkarte (nur für Tests ändern)"
+        type: string
+        default: "newsletter@bistro-grossartig.at"
+
+permissions:
+  contents: write
+  pages: write
+
+concurrency:
+  group: wochenkarte
+  cancel-in-progress: false
+
+jobs:
+  wochenkarte:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GMAIL_USER: haberldavid390@gmail.com
+      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+      NOTIFY_TO: davidhaberl.ai@hotmail.com
+      NEWSLETTER_FROM: ${{ inputs.absender || 'newsletter@bistro-grossartig.at' }}
+      TROCKEN: ${{ inputs.trocken && '1' || '0' }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Neue Wochenkarte im Postfach?
+        id: check
+        run: python3 automation/pruefen.py
+
+      - name: Werkzeuge installieren
+        if: steps.check.outputs.neu == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-deu poppler-utils
+          pip install --quiet pillow numpy opencv-python-headless pillow-heif
+
+      - name: Wochenkarte aufbereiten, hochladen und prüfen
+        if: steps.check.outputs.neu == 'true'
+        run: python3 automation/wochenkarte_action.py
