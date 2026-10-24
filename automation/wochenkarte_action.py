@@ -250,8 +250,13 @@ def zeitraum_text(von, bis):
     return f"{von.day}. {MONATSNAME[von.month]} – {bis.day}. {MONATSNAME[bis.month]} {bis.year}"
 
 
-FUSS = re.compile(r"OFFNUNG|GEOFFNET|UHR\b|TEL|WWW|@|\.AT\b|SAMSTAG|SONNTAG|RUHETAG|RESERV|"
-                  r"GUTEN APPETIT|ALLERGEN|FACEBOOK|INSTAGRAM")
+# Fußbereich-Wörter nur als ganze Wörter erkennen. Früher stand hier ein nacktes "TEL",
+# das auch in "GRILLTELLER", "KOTELETT" usw. steckt – dadurch wurde am 24.10.2026 das
+# Freitagsgericht als Fußbereich behandelt und abgeschnitten.
+FUSS = re.compile(r"OFFNUNG|GEOFFNET|\bUHR\b|\bTEL\b|\bTELEFON|\bWWW\b|@|\.AT\b|\bSAMSTAGS?\b|"
+                  r"\bSONNTAGS?\b|RUHETAG|\bRESERV|GUTEN APPETIT|ALLERGEN|FACEBOOK|INSTAGRAM")
+# Eine Zeile mit Preis ist immer ein Gericht, nie Fußbereich.
+PREIS = re.compile(r"(€|EUR)\s*\d+[,.]\d{2}|\d+[,.]\d{2}\s*(€|EUR)")
 
 
 def unten_bestimmen(zeilen):
@@ -269,10 +274,19 @@ def unten_bestimmen(zeilen):
     grenze = max(zh * 1.6, (max(abst) if abst else zh) * 1.8)
     letzte = zeilen[idx]
     for z in zeilen[idx + 1:]:
-        if z["top"] - letzte["bottom"] > grenze or FUSS.search(norm(z["text"])):
+        t = norm(z["text"])
+        if z["top"] - letzte["bottom"] > grenze:
+            break
+        if FUSS.search(t) and not PREIS.search(t):
             break
         letzte = z
     return int(letzte["bottom"] + zh * 0.7)
+
+
+def preise_zaehlen(zeilen, unten=None):
+    """Anzahl Zeilen mit Preis (optional nur oberhalb von y=unten)."""
+    return sum(1 for z in zeilen
+               if PREIS.search(norm(z["text"])) and (unten is None or z["bottom"] <= unten))
 
 
 def auto_entzerren(im):
@@ -442,6 +456,19 @@ def verarbeite(m, uid):
     if fehlende:
         hinweise.append(f"{fehlende[0]} wurde nicht automatisch erkannt (evtl. Feiertag) – bitte "
                         "kurz ansehen.")
+    # Sicherheitsnetz: Gibt es nach dem Zuschnitt weniger Preise als im Original (bis zur
+    # Schnittkante)? Dann ist wahrscheinlich ein Gericht abgeschnitten.
+    soll_preise = preise_zaehlen(zeilen, unten)
+    ist_preise = preise_zaehlen(ocr_zeilen(out))
+    log(f"Preise: Original {soll_preise}, fertige Karte {ist_preise}")
+    if unten is not None and preise_zaehlen(zeilen) > soll_preise:
+        # Im Original stehen unterhalb der Schnittkante noch Preise → zu knapp geschnitten?
+        weg = [z["text"] for z in zeilen if PREIS.search(norm(z["text"])) and z["bottom"] > unten]
+        hinweise.append("ACHTUNG: Unterhalb der Schnittkante stehen im Original noch Preise ("
+                        + "; ".join(weg) + "). Bitte prüfen, ob ein Gericht abgeschnitten wurde.")
+    elif ist_preise < soll_preise:
+        hinweise.append(f"Auf der fertigen Karte wurden nur {ist_preise} von {soll_preise} Preisen "
+                        "erkannt – bitte kurz ansehen, ob alles lesbar ist.")
     v = out.width / out.height
     if not 0.5 <= v <= 1.4:
         raise InhaltsProblem(f"Das fertige Bild hat ein ungewöhnliches Seitenverhältnis ({v:.2f}).")
